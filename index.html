@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#2a78d6">
+<!-- 外部への通信を一切許可しない。スクリプトも画像も自分のサイト内のものだけ。
+     'wasm-unsafe-eval' は文字認識エンジン（WebAssembly）の実行に必要。JavaScriptのeval()は許可しない。
+     style-src の 'unsafe-inline' はグラフの棒の長さを style 属性で指定しているため必要。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' data: blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<title>ふたり家計簿</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ふたり家計簿">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ================= ロック画面 ================= -->
+<div class="lock-screen hidden" id="lock-screen">
+  <div class="lock-box">
+    <div class="lock-icon">🔒</div>
+    <h2 id="lock-title">パスコードを入力</h2>
+    <p class="lock-msg" id="lock-msg">この端末に保存した家計データは暗号化されています。</p>
+    <input type="password" id="lock-pin" inputmode="numeric" autocomplete="off"
+           autocapitalize="off" spellcheck="false" maxlength="16" placeholder="パスコード">
+    <div class="keypad lock-keypad" id="lock-keypad">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <button data-k="back" class="key-back" aria-label="1文字消す">⌫</button>
+      <button data-k="0">0</button>
+      <button data-k="ok" class="key-ok" aria-label="解除">解除</button>
+    </div>
+    <button class="btn ghost small" id="lock-forgot">パスコードを忘れた場合</button>
+  </div>
+</div>
+
+<header class="app-header">
+  <div class="header-row">
+    <h1 class="app-title">ふたり家計簿</h1>
+    <div class="month-nav" id="month-nav">
+      <button class="icon-btn" id="btn-prev-month" aria-label="前の月">‹</button>
+      <div class="month-label">
+        <strong id="month-title">2026年8月</strong>
+        <span class="month-sub" id="month-range"></span>
+      </div>
+      <button class="icon-btn" id="btn-next-month" aria-label="次の月">›</button>
+      <button class="btn small ghost" id="btn-this-month">今月</button>
+    </div>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="btn-theme" title="表示テーマ切替" aria-label="表示テーマ切替">◐</button>
+  </div>
+</header>
+
+<main>
+
+<!-- ================= ホーム ================= -->
+<section id="tab-home" class="tab-panel active">
+ <div class="home-grid">
+
+  <div class="tiles span-all">
+    <div class="tile">
+      <div class="tile-label">世帯の支出</div>
+      <div class="tile-value" id="sum-expense">¥0</div>
+      <div class="tile-delta" id="sum-expense-delta"></div>
+    </div>
+    <div class="tile">
+      <div class="tile-label">収入</div>
+      <div class="tile-value" id="sum-income">¥0</div>
+      <div class="tile-delta" id="sum-balance"></div>
+    </div>
+  </div>
+
+  <div class="card" id="settle-card">
+    <div class="card-head">
+      <h2>共同費の精算</h2>
+      <span class="hint" id="settle-ratio-hint"></span>
+    </div>
+    <div id="settle-body"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>支払った人</h2>
+      <span class="hint" id="payer-count"></span>
+    </div>
+    <div id="payer-bars" class="payer-bars"></div>
+    <div class="legend" id="payer-legend"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>カテゴリ別</h2>
+      <div class="seg small" id="cat-scope">
+        <button data-scope="all" class="active">世帯</button>
+        <button data-scope="h">夫</button>
+        <button data-scope="w">妻</button>
+      </div>
+    </div>
+    <div id="cat-chart" class="cat-chart"></div>
+    <details class="table-details">
+      <summary>表で見る</summary>
+      <div id="cat-table"></div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>予算の消化</h2>
+      <span class="hint">設定タブで登録できます</span>
+    </div>
+    <div id="budget-list"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>6か月の推移</h2></div>
+    <div id="trend-chart" class="trend-chart"></div>
+    <div class="legend" id="trend-legend"></div>
+    <details class="table-details">
+      <summary>表で見る</summary>
+      <div id="trend-table"></div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>最近の記録</h2>
+      <button class="btn small ghost" id="btn-goto-list">すべて見る</button>
+    </div>
+    <div id="recent-list"></div>
+  </div>
+
+ </div>
+</section>
+
+<!-- ================= 入力 ================= -->
+<section id="tab-add" class="tab-panel">
+
+  <div class="seg wide small" id="add-mode">
+    <button data-mode="simple" class="active">テンキー</button>
+    <button data-mode="receipt">📷 レシート</button>
+    <button data-mode="bulk">📋 まとめて貼付</button>
+  </div>
+
+  <div class="entry-wrap">
+
+    <!-- --- テンキー入力 --- -->
+    <div id="mode-simple" class="mode-panel active">
+      <div class="entry">
+
+        <div class="seg wide" id="tx-type">
+          <button data-type="expense" class="active">支出</button>
+          <button data-type="income">収入</button>
+        </div>
+
+        <div class="amount-display" id="amount-display" role="status" aria-live="polite">
+          <span class="yen">¥</span><span class="amount-num" id="amount-num">0</span>
+        </div>
+
+        <div class="entry-row">
+          <div class="seg grow" id="in-payer"></div>
+          <div class="seg grow" id="in-share">
+            <button data-share="shared" class="active">共同</button>
+            <button data-share="personal">個人</button>
+          </div>
+        </div>
+
+        <div class="cat-head">
+          <span class="field-label">カテゴリ</span>
+          <button class="btn small ghost" id="btn-cat-toggle">すべて表示</button>
+        </div>
+        <div class="cat-grid" id="in-category"></div>
+
+        <div class="entry-row entry-row-date">
+          <div class="date-chip">
+            <button class="date-arrow" id="date-prev" aria-label="前の日">‹</button>
+            <button class="date-label" id="date-label">今日</button>
+            <button class="date-arrow" id="date-next" aria-label="次の日">›</button>
+            <input type="date" id="in-date" class="date-native" aria-label="日付">
+          </div>
+          <select class="chip-select" id="in-method" aria-label="支払方法"></select>
+        </div>
+
+        <details class="entry-detail" id="entry-detail">
+          <summary>お店・メモ・レシート写真</summary>
+          <div class="detail-body">
+            <label class="field">
+              <span class="field-label">お店・内容</span>
+              <input type="text" id="in-store" list="store-suggest" placeholder="例）まいばすけっと" autocomplete="off">
+              <datalist id="store-suggest"></datalist>
+            </label>
+            <label class="field">
+              <span class="field-label">メモ</span>
+              <input type="text" id="in-memo" placeholder="例）来客用" autocomplete="off">
+            </label>
+            <div id="receipt-attached" class="receipt-attached hidden">
+              <img id="receipt-attached-img" alt="添付レシート">
+              <button class="btn small danger" id="btn-detach-receipt">写真を外す</button>
+            </div>
+          </div>
+        </details>
+
+      </div>
+    </div>
+
+    <!-- --- レシート読取 --- -->
+    <div id="mode-receipt" class="mode-panel">
+      <div class="card">
+        <p class="lead">レシートを撮ると、日付・金額・お店の候補を読み取ります。候補をタップして入力画面に反映できます。</p>
+        <div class="actions">
+          <label class="btn primary big file-btn">
+            レシートを撮影／選択
+            <input type="file" id="in-receipt" accept="image/*" capture="environment" hidden>
+          </label>
+        </div>
+        <p class="hint center" id="ocr-note">初回だけ日本語の文字認識データ（約15MB）を読み込みます。2回目からは端末に残るので速くなります。</p>
+
+        <div id="ocr-area" class="hidden">
+          <div class="ocr-preview"><img id="ocr-img" alt="レシート画像"></div>
+          <div class="ocr-status" id="ocr-status"></div>
+          <div id="ocr-result" class="hidden">
+            <div class="field">
+              <span class="field-label">金額の候補</span>
+              <div class="chips" id="ocr-amounts"></div>
+            </div>
+            <div class="field">
+              <span class="field-label">日付の候補</span>
+              <div class="chips" id="ocr-dates"></div>
+            </div>
+            <div class="field">
+              <span class="field-label">お店の候補</span>
+              <div class="chips" id="ocr-stores"></div>
+            </div>
+            <details class="table-details">
+              <summary>読み取った文字を全部見る</summary>
+              <pre id="ocr-raw" class="ocr-raw"></pre>
+            </details>
+            <div class="actions">
+              <button class="btn primary big" id="btn-ocr-apply">入力画面に反映する</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- --- まとめて貼付 --- -->
+    <div id="mode-bulk" class="mode-panel">
+      <div class="card">
+        <p class="lead">スマホのメモやExcelからコピーした行を貼り付けると、日付・金額・カテゴリを読み取ってまとめて登録します。1行＝1件です。</p>
+        <details class="table-details">
+          <summary>書き方の例</summary>
+          <pre class="ocr-raw">8/12 まいばすけっと 2380 食費 夫 現金
+8/12 ランチ 980 外食 妻
+8/13	ドラッグストア	1,540	日用品
+2026-08-14,電車,420,交通,夫,IC</pre>
+          <p class="hint">区切りはスペース・タブ・カンマのどれでも大丈夫です。カテゴリを省いた行は、お店の名前や過去の入力から自動で推測します。</p>
+        </details>
+        <div class="bulk-defaults">
+          <div class="field">
+            <span class="field-label">支払者が書いていない行は</span>
+            <div class="seg wide" id="bulk-payer"></div>
+          </div>
+          <div class="field">
+            <span class="field-label">負担が書いていない行は</span>
+            <div class="seg wide" id="bulk-share">
+              <button data-share="shared" class="active">共同</button>
+              <button data-share="personal">個人</button>
+            </div>
+          </div>
+        </div>
+        <textarea id="bulk-text" rows="8" placeholder="ここに貼り付け"></textarea>
+        <div class="actions">
+          <button class="btn" id="btn-bulk-parse">読み取る</button>
+          <button class="btn primary" id="btn-bulk-save" disabled>まとめて登録</button>
+        </div>
+        <div id="bulk-preview"></div>
+      </div>
+    </div>
+
+    <!-- --- テンキー（固定） --- -->
+    <div class="keypad-bar" id="keypad-bar">
+      <div class="keypad" id="keypad">
+        <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+        <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+        <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+        <button data-k="00">00</button><button data-k="0">0</button>
+        <button data-k="back" class="key-back" aria-label="1文字消す">⌫</button>
+      </div>
+      <button class="btn primary big" id="btn-save">保存する</button>
+      <p class="keypad-hint" id="keypad-hint"></p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ================= 一覧 ================= -->
+<section id="tab-list" class="tab-panel">
+  <div class="card filters">
+    <input type="search" id="f-text" placeholder="お店・メモで検索" autocomplete="off">
+    <div class="filter-row">
+      <select id="f-payer"><option value="">支払者すべて</option></select>
+      <select id="f-category"><option value="">カテゴリすべて</option></select>
+      <select id="f-share">
+        <option value="">負担すべて</option>
+        <option value="shared">共同</option>
+        <option value="personal">個人</option>
+      </select>
+      <select id="f-method"><option value="">支払方法すべて</option></select>
+    </div>
+    <div class="filter-summary" id="list-summary"></div>
+  </div>
+  <div id="tx-list" class="tx-list"></div>
+</section>
+
+<!-- ================= 設定 ================= -->
+<section id="tab-settings" class="tab-panel">
+ <div class="home-grid">
+
+  <div class="card">
+    <div class="card-head"><h2>ふたりの名前</h2></div>
+    <div id="member-editor"></div>
+    <p class="hint">名前を変えても、これまでの記録はそのまま引き継がれます。</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>共同費の負担割合</h2></div>
+    <div class="ratio-row">
+      <label><span id="ratio-name-h">夫</span>
+        <input type="number" id="ratio-h" min="0" max="100" step="1"> %
+      </label>
+      <span class="ratio-rest">＋ <span id="ratio-name-w">妻</span> <b id="ratio-w-view">50</b>%</span>
+    </div>
+    <p class="hint">「共同」で登録した支出を、この割合で分け合ったものとして精算額を計算します。</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>月の区切り</h2></div>
+    <label class="field">
+      <span class="field-label">集計の開始日</span>
+      <select id="set-startday"></select>
+    </label>
+    <p class="hint">給料日を起点にしたいときは、その日を選んでください（例：25日 → 8月分は 7/25〜8/24）。</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>入力の初期値</h2></div>
+    <div class="field">
+      <span class="field-label">入力画面を開いたときの支払者</span>
+      <div class="seg wide" id="set-defpayer"></div>
+    </div>
+    <label class="switch-row">
+      <input type="checkbox" id="set-keepdetail">
+      <span>保存したあともお店の名前を残す</span>
+    </label>
+    <p class="hint">同じお店で続けて入力するときに便利です。</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>カテゴリと予算</h2>
+      <div class="seg small" id="cat-edit-type">
+        <button data-type="expense" class="active">支出</button>
+        <button data-type="income">収入</button>
+      </div>
+    </div>
+    <div id="category-editor"></div>
+    <div class="actions">
+      <input type="text" id="new-cat-name" placeholder="新しいカテゴリ名">
+      <button class="btn" id="btn-add-cat">追加</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>支払方法</h2></div>
+    <div id="method-editor"></div>
+    <div class="actions">
+      <input type="text" id="new-method-name" placeholder="新しい支払方法">
+      <button class="btn" id="btn-add-method">追加</button>
+    </div>
+  </div>
+
+  <div class="card" id="lock-card">
+    <div class="card-head">
+      <h2>パスコードロック</h2>
+      <span class="hint" id="lock-state"></span>
+    </div>
+    <div id="lock-settings"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>レシート画像</h2></div>
+    <label class="switch-row">
+      <input type="checkbox" id="set-saveimg">
+      <span>レシートの写真も保存する</span>
+    </label>
+    <p class="hint" id="img-usage"></p>
+    <div class="actions">
+      <button class="btn danger" id="btn-clear-images">保存した画像をすべて削除</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Excel・バックアップ</h2></div>
+    <div class="io-grid">
+      <button class="btn" id="btn-export-csv">CSVで書き出す</button>
+      <label class="btn file-btn">CSVを読み込む<input type="file" id="in-csv" accept=".csv,text/csv" hidden></label>
+      <button class="btn" id="btn-export-json">バックアップを保存</button>
+      <label class="btn file-btn">バックアップを復元<input type="file" id="in-json" accept=".json,application/json" hidden></label>
+    </div>
+    <p class="hint">CSVはExcelでそのまま開けます。バックアップ（JSON）には設定を含む全データが入ります。写真は含まれません。</p>
+    <div class="actions">
+      <button class="btn danger" id="btn-reset">すべてのデータを消す</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>このアプリについて</h2></div>
+    <p class="hint">データはこの端末の中だけに保存されます（サーバーには何も送りません）。端末を移すときは「バックアップを保存」→ 新しい端末で「復元」してください。夫婦それぞれの端末で使う場合も、バックアップの受け渡しで合流できます。</p>
+  </div>
+
+ </div>
+</section>
+
+</main>
+
+<!-- ================= CSV取込ダイアログ ================= -->
+<div class="modal-backdrop hidden" id="csv-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>CSVの読み込み</h2>
+      <button class="icon-btn" id="csv-close" aria-label="閉じる">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint">それぞれの列が何のデータかを選んでください。「使わない」にした列は無視されます。</p>
+      <div id="csv-mapping" class="csv-mapping"></div>
+      <label class="switch-row">
+        <input type="checkbox" id="csv-hasheader" checked>
+        <span>1行目は見出し行</span>
+      </label>
+      <div id="csv-preview"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="csv-cancel">やめる</button>
+      <button class="btn primary" id="csv-import">取り込む</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 明細編集ダイアログ ================= -->
+<div class="modal-backdrop hidden" id="edit-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>記録の編集</h2>
+      <button class="icon-btn" id="edit-close" aria-label="閉じる">✕</button>
+    </div>
+    <div class="modal-body" id="edit-body"></div>
+    <div class="modal-foot">
+      <button class="btn danger" id="edit-delete">削除</button>
+      <span class="spacer"></span>
+      <button class="btn" id="edit-cancel">やめる</button>
+      <button class="btn primary" id="edit-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="tooltip" class="viz-tooltip hidden"></div>
+<div id="toast" class="toast hidden"><span id="toast-msg"></span><button id="toast-action" class="toast-action hidden"></button></div>
+
+<nav class="bottom-nav">
+  <button class="nav-btn active" data-tab="home"><span class="nav-ico">📊</span><span class="nav-txt">ホーム</span></button>
+  <button class="nav-btn nav-primary" data-tab="add"><span class="nav-ico">＋</span><span class="nav-txt">入力</span></button>
+  <button class="nav-btn" data-tab="list"><span class="nav-ico">📋</span><span class="nav-txt">一覧</span></button>
+  <button class="nav-btn" data-tab="settings"><span class="nav-ico">⚙️</span><span class="nav-txt">設定</span></button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1051,8 +1051,13 @@ async function handleReceipt(file) {
   }
 }
 
+const CIRCLED_DIGITS = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+
 function normalizeDigits(s) {
   return s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+          // 文字認識が数字を丸数字として返すことがあるため、ふつうの数字に直す
+          .replace(/⓪/g, '0')
+          .replace(/[①-⑳]/g, c => String(CIRCLED_DIGITS.indexOf(c) + 1))
           .replace(/[，、]/g, ',')
           .replace(/[／]/g, '/')
           .replace(/[－ー―]/g, '-');

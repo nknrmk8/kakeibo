@@ -1,0 +1,7 @@
+# 自作のソースは LF に統一
+* text=auto eol=lf
+
+# 同梱した文字認識エンジン一式は、改行変換で壊さないようそのまま扱う
+vendor/** binary
+*.gz binary
+*.png binary
